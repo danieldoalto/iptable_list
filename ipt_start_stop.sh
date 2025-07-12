@@ -18,7 +18,7 @@ C_BOLD='\033[1m'
 # Função para verificar se os comandos necessários existem
 check_dependencies() {
     local missing_deps=0
-    for cmd in iptables iptables-save iptables-restore diff less mktemp stat numfmt; do
+    for cmd in iptables iptables-save iptables-restore diff less mktemp stat numfmt netfilter-persistent; do
         if ! command -v "$cmd" &> /dev/null; then
             echo -e "${C_RED}[!] Dependência não encontrada: $cmd. Por favor, instale-a.${C_RESET}"
             missing_deps=1
@@ -37,13 +37,85 @@ show_menu() {
     echo -e "${C_CYAN}=========================================${C_RESET}"
     echo -e "${C_GREEN}1.${C_RESET} Parar Firewall (e criar backup)"
     echo -e "${C_GREEN}2.${C_RESET} Iniciar Firewall (restaurar último backup)"
-    echo -e "${C_GREEN}3.${C_RESET} Restaurar Backup Específico"
-    echo -e "${C_GREEN}4.${C_RESET} Visualizar Conteúdo de Backup"
-    echo -e "${C_GREEN}5.${C_RESET} Comparar Regras Atuais com Backup"
-    echo -e "${C_GREEN}6.${C_RESET} Listar Backups Salvos"
-    echo -e "${C_GREEN}7.${C_RESET} Gerenciamento Avançado de Backups"
-    echo -e "${C_RED}8.${C_RESET} Sair"
+    echo -e "${C_GREEN}3.${C_RESET} Gerar Backup"
+    echo -e "${C_GREEN}4.${C_RESET} Restaurar Backup Específico"
+    echo -e "${C_GREEN}5.${C_RESET} Visualizar Conteúdo de Backup"
+    echo -e "${C_GREEN}6.${C_RESET} Comparar Regras Atuais com Backup"
+    echo -e "${C_GREEN}7.${C_RESET} Listar Backups Salvos"
+    echo -e "${C_GREEN}8.${C_RESET} Gerenciamento Avançado de Backups"
+    echo -e "${C_RED}9.${C_RESET} Sair"
     echo -e "${C_CYAN}-----------------------------------------${C_RESET}"
+}
+
+# Função para gerar um backup das regras atuais em um arquivo
+generate_file_backup() {
+    echo -e "${C_BLUE}[+] Criando backup em arquivo com data e hora...${C_RESET}"
+    
+    local filename="iptables_backup_$(date +%Y-%m-%d_%H-%M-%S).rules"
+    local backup_path="$BACKUP_DIR/$filename"
+
+    sudo bash -c "iptables-save > \"$backup_path\""
+
+    if [ $? -eq 0 ]; then
+        echo -e "${C_GREEN}[✓] Backup em arquivo salvo com sucesso em: $backup_path${C_RESET}"
+        return 0
+    else
+        echo -e "${C_RED}[!] Erro: Falha ao criar o arquivo de backup. Verifique as permissões.${C_RESET}"
+        return 1
+    fi
+}
+
+# Função para salvar as regras de forma persistente
+generate_persistent_backup() {
+    read -p "$(echo -e "${C_YELLOW}[?] Isso irá sobrescrever as regras salvas para a próxima inicialização. Deseja continuar? [s/N]:${C_RESET} ")" confirm
+    if [[ ! "$confirm" =~ ^[sS]$ ]]; then
+        echo -e "${C_BLUE}[i] Operação cancelada.${C_RESET}"
+        return 1
+    fi
+
+    echo -e "${C_BLUE}[+] Salvando regras atuais para serem persistentes...${C_RESET}"
+    sudo netfilter-persistent save
+
+    if [ $? -eq 0 ]; then
+        echo -e "${C_GREEN}[✓] Regras salvas com sucesso em /etc/iptables/rules.v4 e /etc/iptables/rules.v6${C_RESET}"
+        return 0
+    else
+        echo -e "${C_RED}[!] Erro: Falha ao salvar as regras persistentes.${C_RESET}"
+        return 1
+    fi
+}
+
+# Função para exibir o submenu de backup
+generate_backup() {
+    while true; do
+        clear
+        echo -e "${C_CYAN}=========================================${C_RESET}"
+        echo -e "    ${C_BOLD}${C_YELLOW}Opções de Geração de Backup${C_RESET}    "
+        echo -e "${C_CYAN}=========================================${C_RESET}"
+        echo -e "${C_GREEN}1.${C_RESET} Backup Persistente (netfilter-persistent)"
+        echo -e "${C_GREEN}2.${C_RESET} Backup em Arquivo (método manual)"
+        echo -e "${C_RED}3.${C_RESET} Voltar ao menu principal"
+        echo -e "${C_CYAN}-----------------------------------------${C_RESET}"
+        read -p "$(echo -e "${C_YELLOW}Escolha uma opção [1-3]:${C_RESET} ")" backup_choice
+
+        case $backup_choice in
+            1)
+                generate_persistent_backup
+                break
+                ;;
+            2)
+                generate_file_backup
+                break
+                ;;
+            3)
+                break
+                ;;
+            *)
+                echo -e "${C_RED}[!] Opção inválida. Por favor, tente novamente.${C_RESET}"
+                read -p "$(echo -e "${C_YELLOW}Pressione [Enter] para continuar...${C_RESET}")"
+                ;;
+        esac
+    done
 }
 
 # Função para parar o firewall e criar um backup com data e hora
@@ -54,19 +126,11 @@ stop_firewall() {
         return
     fi
 
-    echo -e "${C_BLUE}[+] Criando backup com data e hora...${C_RESET}"
-    
-    # Gera um nome de arquivo único com o timestamp atual
-    local filename="iptables_backup_$(date +%Y-%m-%d_%H-%M-%S).rules"
-    local backup_path="$BACKUP_DIR/$filename"
+    # Primeiro, gera o backup em arquivo
+    generate_file_backup
 
-    # Salva as regras atuais do iptables no arquivo de backup
-    # Usando bash -c para garantir que o redirecionamento funcione com sudo
-    sudo bash -c "iptables-save > \"$backup_path\""
-
+    # Se o backup foi bem-sucedido, continua para parar o firewall
     if [ $? -eq 0 ]; then
-        echo -e "${C_GREEN}[✓] Backup salvo com sucesso em: $backup_path${C_RESET}"
-        
         echo -e "${C_BLUE}[+] Liberando todo o tráfego de rede...${C_RESET}"
         sudo iptables -P INPUT ACCEPT
         sudo iptables -P FORWARD ACCEPT
@@ -75,7 +139,7 @@ stop_firewall() {
         sudo iptables -X
         echo -e "${C_GREEN}[✓] Firewall desativado temporariamente.${C_RESET}"
     else
-        echo -e "${C_RED}[!] Erro: Falha ao criar o arquivo de backup. Verifique as permissões.${C_RESET}"
+        echo -e "${C_RED}[!] O firewall não foi parado porque o backup falhou.${C_RESET}"
     fi
 }
 
@@ -374,7 +438,7 @@ sudo chmod 700 "$BACKUP_DIR" 2>/dev/null || echo -e "${C_YELLOW}[!] Aviso: Não 
 # Loop principal do menu
 while true; do
     show_menu
-    read -p "$(echo -e "${C_YELLOW}Escolha uma opção [1-8]:${C_RESET} ")" choice
+    read -p "$(echo -e "${C_YELLOW}Escolha uma opção [1-9]:${C_RESET} ")" choice
 
     case $choice in
         1)
@@ -384,21 +448,24 @@ while true; do
             start_firewall
             ;;
         3)
-            restore_specific_backup
+            generate_backup
             ;;
         4)
-            view_backup_content
+            restore_specific_backup
             ;;
         5)
-            compare_rules_with_backup
+            view_backup_content
             ;;
         6)
-            list_backups
+            compare_rules_with_backup
             ;;
         7)
-            manage_backup_retention
+            list_backups
             ;;
         8)
+            manage_backup_retention
+            ;;
+        9)
             echo -e "${C_BLUE}Saindo...${C_RESET}"
             break
             ;;
